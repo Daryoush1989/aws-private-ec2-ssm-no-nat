@@ -7,6 +7,9 @@
 - No bastion host and no inbound security group rules
 - No NAT Gateway (uses VPC Interface Endpoints for SSM)
 
+## Architecture Diagram
+![Architecture](docs/architecture.png)
+
 ## Architecture (high level)
 - VPC: 10.20.0.0/16 (prod-main-vpc)
 - Public subnets: 10.20.0.0/20 (2a), 10.20.16.0/20 (2b)
