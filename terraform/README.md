@@ -76,6 +76,16 @@ Project prefix: \*\*prod-main\*\*
 
 ---
 
+## Cost control / Cleanup (why we run `terraform destroy`)
+
+This project uses **Interface VPC Endpoints** (for SSM) instead of a NAT Gateway.  
+Even though this is cost-optimized, **Interface Endpoints still incur hourly charges**, and EC2 instances can also generate costs.
+
+To avoid charges when you finish testing, tear everything down using Terraform:
+
+```powershell
+cd .\terraform
+terraform destroy
 
 
 \## Prerequisites
