@@ -1,0 +1,320 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Private EC2 via SSM (No NAT, No Bastion) using Interface VPC Endpoints - eu-west-2"
+
+Parameters:
+  ProjectPrefix:
+    Type: String
+    Default: prod-main
+  VpcCidr:
+    Type: String
+    Default: 10.20.0.0/16
+
+  PublicSubnet1Cidr:
+    Type: String
+    Default: 10.20.0.0/20
+  PublicSubnet2Cidr:
+    Type: String
+    Default: 10.20.16.0/20
+
+  PrivateSubnet1Cidr:
+    Type: String
+    Default: 10.20.128.0/20
+  PrivateSubnet2Cidr:
+    Type: String
+    Default: 10.20.144.0/20
+
+  InstanceType:
+    Type: String
+    Default: t3.micro
+
+  # If this role name already exists in your account, change it (IAM names must be unique account-wide)
+  Ec2SsmRoleName:
+    Type: String
+    Default: role-prod-ec2-ssm
+
+Resources:
+  # -------------------------
+  # VPC
+  # -------------------------
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectPrefix}-vpc"
+
+  # -------------------------
+  # Internet Gateway
+  # -------------------------
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectPrefix}-igw"
+
+  IgwAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # -------------------------
+  # Subnets (2 public, 2 private) across first two AZs
+  # -------------------------
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Ref PublicSubnet1Cidr
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectPrefix}-subnet-public1-eu-west-2a"
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Ref PublicSubnet2Cidr
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectPrefix}-subnet-public2-eu-west-2b"
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Ref PrivateSubnet1Cidr
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectPrefix}-subnet-private1-eu-west-2a"
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Ref PrivateSubnet2Cidr
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectPrefix}-subnet-private2-eu-west-2b"
+
+  # -------------------------
+  # Route Tables
+  # -------------------------
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectPrefix}-rtb-public"
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: IgwAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1Assoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2Assoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  # Private route tables: local-only (NO NAT route)
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectPrefix}-rtb-private1-eu-west-2a"
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectPrefix}-rtb-private2-eu-west-2b"
+
+  PrivateSubnet1Assoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable1
+
+  PrivateSubnet2Assoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable2
+
+  # -------------------------
+  # Security Groups
+  # -------------------------
+  PrivateEc2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Private EC2 - no inbound"
+      VpcId: !Ref VPC
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: "sg-prod-private-app"
+
+  VpceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "SG for SSM Interface Endpoints"
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref PrivateEc2SecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: "vpce-ssm"
+
+  # -------------------------
+  # Interface VPC Endpoints (SSM trio)
+  # -------------------------
+  SsmVpce:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssm"
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref VpceSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectPrefix}-vpce-ssm"
+
+  Ec2MessagesVpce:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ec2messages"
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref VpceSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectPrefix}-vpce-ec2messages"
+
+  SsmMessagesVpce:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssmmessages"
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref VpceSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectPrefix}-vpce-ssmmessages"
+
+  # -------------------------
+  # IAM Role + Instance Profile for SSM
+  # -------------------------
+  Ec2SsmRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref Ec2SsmRoleName
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  Ec2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Ref Ec2SsmRoleName
+      Roles:
+        - !Ref Ec2SsmRole
+
+  # -------------------------
+  # EC2 instance (private subnet, no public IP)
+  # -------------------------
+  PrivateEc2Instance:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - SsmVpce
+      - Ec2MessagesVpce
+      - SsmMessagesVpce
+    Properties:
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref Ec2InstanceProfile
+
+      # Amazon Linux 2023 via SSM public parameter (always latest)
+      ImageId: !Sub "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}"
+
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref PrivateSubnet1
+          AssociatePublicIpAddress: false
+          GroupSet:
+            - !Ref PrivateEc2SecurityGroup
+
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectPrefix}-ec2-private-1"
+
+Outputs:
+  VpcId:
+    Value: !Ref VPC
+  InstanceId:
+    Value: !Ref PrivateEc2Instance
+  PrivateEc2SgId:
+    Value: !Ref PrivateEc2SecurityGroup
+  EndpointSgId:
+    Value: !Ref VpceSecurityGroup
+  SsmVpceId:
+    Value: !Ref SsmVpce
+  Ec2MessagesVpceId:
+    Value: !Ref Ec2MessagesVpce
+  SsmMessagesVpceId:
+    Value: !Ref SsmMessagesVpce
