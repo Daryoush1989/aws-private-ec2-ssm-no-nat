@@ -1,0 +1,18 @@
+# Terraform
+**/.terraform/*
+**/*.tfstate
+**/*.tfstate.*
+**/terraform.tfstate.d/*
+**/.terraform.lock.hcl
+
+# Crash logs
+crash.log
+
+# Local overrides
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Sensitive vars
+*.tfvars
